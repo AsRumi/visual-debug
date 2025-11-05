@@ -1,0 +1,83 @@
+{
+  "name": "visual-debug",
+  "displayName": "Visual Debug",
+  "description": "An animated debugger that visualizes algorithm execution and data structure transformations.",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.105.0"
+  },
+  "categories": [
+    "Debuggers",
+    "Visualization"
+  ],
+  "activationEvents": [
+    "onCommand:visual-debug.start",
+    "onCommand:visual-debug.openInBrowser",
+    "onCommand:visual-debug.debugCurrentFile",
+    "onDebug"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "visual-debug.start",
+        "title": "Visual Debug: Start Visualizer",
+        "category": "Visual Debug"
+      },
+      {
+        "command": "visual-debug.openInBrowser",
+        "title": "Visual Debug: Open 3D View in Browser",
+        "category": "Visual Debug",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "visual-debug.debugCurrentFile",
+        "title": "Visual Debug: Debug Current File",
+        "category": "Visual Debug"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "visual-debug.debugCurrentFile",
+          "when": "resourceExtname == .js",
+          "group": "debug"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "visual-debug.start",
+          "when": "resourceExtname == .js",
+          "group": "navigation"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "visual-debug.start",
+        "key": "ctrl+alt+d",
+        "mac": "cmd+alt+d",
+        "when": "editorTextFocus"
+      }
+    ]
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "pretest": "npm run lint",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@babel/generator": "^7.28.5",
+    "@babel/parser": "^7.28.5",
+    "@babel/traverse": "^7.28.5",
+    "@babel/types": "^7.28.5",
+    "@types/babel__generator": "^7.27.0",
+    "@types/babel__traverse": "^7.28.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "@types/vscode": "^1.105.0",
+    "@vscode/test-cli": "^0.0.11",
+    "@vscode/test-electron": "^2.5.2",
+    "eslint": "^9.36.0"
+  }
+}
