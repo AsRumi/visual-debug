@@ -15,7 +15,8 @@ class VisualizationServer {
     });
     this.port = 3000;
     this.isRunning = false;
-    this.currentSocket = null;
+    this.connectedSockets = [];
+    this.pendingOperations = null; // Store operations to send when client connects
   }
 
   start() {
@@ -34,13 +35,20 @@ class VisualizationServer {
 
       // Socket.io connection handling
       this.io.on("connection", (socket) => {
-        console.log("Browser visualizer connected");
-        this.currentSocket = socket;
+        console.log("Browser visualizer connected:", socket.id);
+        this.connectedSockets.push(socket);
 
         socket.on("ready", () => {
-          console.log("Browser visualizer is ready");
-          // Send initial test data
-          this.sendInitialData();
+          console.log("Browser visualizer is ready:", socket.id);
+
+          // If we have pending operations, send them
+          if (this.pendingOperations) {
+            console.log("Sending pending operations to newly connected client");
+            socket.emit("operations", this.pendingOperations);
+          } else {
+            // Send initial test data
+            this.sendInitialData(socket);
+          }
         });
 
         socket.on("control", (data) => {
@@ -49,8 +57,14 @@ class VisualizationServer {
         });
 
         socket.on("disconnect", () => {
-          console.log("Browser visualizer disconnected");
-          this.currentSocket = null;
+          console.log("Browser visualizer disconnected:", socket.id);
+          this.connectedSockets = this.connectedSockets.filter(
+            (s) => s.id !== socket.id
+          );
+        });
+
+        socket.on("error", (error) => {
+          console.error("Socket error:", error);
         });
       });
 
@@ -68,6 +82,7 @@ class VisualizationServer {
           .on("error", (err) => {
             // @ts-ignore
             if (err && err.code === "EADDRINUSE" && port < 3010) {
+              console.log(`Port ${port} in use, trying ${port + 1}...`);
               // Try next port
               tryPort(port + 1);
             } else {
@@ -83,6 +98,12 @@ class VisualizationServer {
   stop() {
     return new Promise((resolve) => {
       if (this.isRunning) {
+        // Close all socket connections
+        this.connectedSockets.forEach((socket) => {
+          socket.disconnect(true);
+        });
+        this.connectedSockets = [];
+
         this.server.close(() => {
           this.isRunning = false;
           console.log("Visualization server stopped");
@@ -94,24 +115,45 @@ class VisualizationServer {
     });
   }
 
-  sendInitialData() {
-    if (this.currentSocket) {
-      this.currentSocket.emit("initialize", {
-        array: [64, 34, 25, 12, 22, 11, 90, 45, 33, 77],
-        algorithm: "bubbleSort",
-      });
+  sendInitialData(socket = null) {
+    const data = {
+      array: [64, 34, 25, 12, 22, 11, 90, 45, 33, 77],
+      algorithm: "bubbleSort",
+    };
+
+    if (socket) {
+      socket.emit("initialize", data);
+    } else if (this.connectedSockets.length > 0) {
+      this.connectedSockets.forEach((s) => s.emit("initialize", data));
     }
   }
 
   sendOperation(operation) {
-    if (this.currentSocket) {
-      this.currentSocket.emit("operation", operation);
+    if (this.connectedSockets.length > 0) {
+      this.connectedSockets.forEach((socket) => {
+        socket.emit("operation", operation);
+      });
+    } else {
+      console.log("No connected clients to send operation to");
     }
   }
 
   sendOperations(operations) {
-    if (this.currentSocket) {
-      this.currentSocket.emit("operations", operations);
+    console.log(
+      `Sending ${operations.length} operations to ${this.connectedSockets.length} client(s)`
+    );
+
+    // Store operations for newly connecting clients
+    this.pendingOperations = operations;
+
+    if (this.connectedSockets.length > 0) {
+      this.connectedSockets.forEach((socket) => {
+        socket.emit("operations", operations);
+      });
+    } else {
+      console.log(
+        "No connected clients yet. Operations will be sent when a client connects."
+      );
     }
   }
 

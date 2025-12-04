@@ -14,6 +14,7 @@
     "onCommand:visual-debug.start",
     "onCommand:visual-debug.openInBrowser",
     "onCommand:visual-debug.debugCurrentFile",
+    "onCommand:visual-debug.visualizeAlgorithm",
     "onDebug"
   ],
   "main": "./extension.js",
@@ -34,6 +35,12 @@
         "command": "visual-debug.debugCurrentFile",
         "title": "Visual Debug: Debug Current File",
         "category": "Visual Debug"
+      },
+      {
+        "command": "visual-debug.visualizeAlgorithm",
+        "title": "Visual Debug: Visualize Algorithm",
+        "category": "Visual Debug",
+        "icon": "$(play)"
       }
     ],
     "menus": {
@@ -58,6 +65,11 @@
         "key": "ctrl+alt+d",
         "mac": "cmd+alt+d",
         "when": "editorTextFocus"
+      },
+      {
+        "command": "visual-debug.visualizeAlgorithm",
+        "key": "ctrl+alt+v",
+        "mac": "cmd+alt+v"
       }
     ]
   },

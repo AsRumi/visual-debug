@@ -1,10 +1,12 @@
 const vscode = require("vscode");
 const VisualizationServer = require("./server");
+const CodeParser = require("./parser");
 const { exec } = require("child_process");
 
 // Store webview panel and server globally
 let visualDebugPanel = null;
 let server = null;
+let parser = null;
 
 /**
  * @param {vscode.ExtensionContext} context
@@ -12,8 +14,9 @@ let server = null;
 function activate(context) {
   console.log("Visual Debug extension is now active!");
 
-  // Initialize server
+  // Initialize server and parser
   server = new VisualizationServer();
+  parser = new CodeParser();
 
   // Register command to start visual debugging in VS Code
   let startCommand = vscode.commands.registerCommand(
@@ -59,13 +62,6 @@ function activate(context) {
             vscode.window.showInformationMessage(
               `Visual Debug opened in browser at ${url}`
             );
-
-            // After browser opens, send test data
-            setTimeout(() => {
-              const testArray = [64, 34, 25, 12, 22, 11, 90, 45, 33, 77];
-              const operations = server.generateBubbleSortOperations(testArray);
-              server.sendOperations(operations);
-            }, 2000);
           }
         });
       } catch (error) {
@@ -79,7 +75,7 @@ function activate(context) {
   // Register command to debug current file
   let debugFileCommand = vscode.commands.registerCommand(
     "visual-debug.debugCurrentFile",
-    () => {
+    async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) {
         vscode.window.showErrorMessage("No active file to debug");
@@ -90,26 +86,165 @@ function activate(context) {
       const document = editor.document;
       const code = document.getText();
 
-      // Create webview if it doesn't exist
-      if (!visualDebugPanel) {
-        createWebviewPanel(context);
-      }
+      try {
+        // Parse the code
+        const operations = parser.parse(code);
 
-      // Send the code to the webview for visualization
-      if (visualDebugPanel) {
-        visualDebugPanel.webview.postMessage({
-          type: "loadCode",
-          code: code,
-          fileName: document.fileName,
-        });
+        // Create webview if it doesn't exist
+        if (!visualDebugPanel) {
+          createWebviewPanel(context);
+        }
+
+        // Send operations to webview
+        if (visualDebugPanel) {
+          visualDebugPanel.webview.postMessage({
+            type: "operations",
+            operations: operations,
+            code: code,
+            fileName: document.fileName,
+          });
+        }
+
+        // Also send to browser if server is running
+        server.sendOperations(operations);
+
+        vscode.window.showInformationMessage(
+          `Visualizing ${operations.length} operations`
+        );
+      } catch (error) {
+        vscode.window.showErrorMessage(
+          `Failed to parse code: ${error.message}`
+        );
       }
     }
   );
 
+  // Register command to visualize algorithm
+  let visualizeAlgorithmCommand = vscode.commands.registerCommand(
+    "visual-debug.visualizeAlgorithm",
+    async () => {
+      // Show quick pick for algorithm selection
+      const algorithmChoice = await vscode.window.showQuickPick(
+        [
+          { label: "Bubble Sort", value: "bubbleSort" },
+          { label: "Selection Sort", value: "selectionSort" },
+          { label: "Insertion Sort", value: "insertionSort" },
+          { label: "Custom Code", value: "custom" },
+        ],
+        {
+          placeHolder: "Select an algorithm to visualize",
+        }
+      );
+
+      if (!algorithmChoice) return;
+
+      if (algorithmChoice.value === "custom") {
+        // Prompt for custom array
+        const arrayInput = await vscode.window.showInputBox({
+          prompt: "Enter array values (comma-separated numbers)",
+          placeHolder: "e.g., 64, 34, 25, 12, 22, 11, 90",
+          value: "64, 34, 25, 12, 22, 11, 90",
+        });
+
+        if (!arrayInput) return;
+
+        const array = arrayInput
+          .split(",")
+          .map((n) => parseInt(n.trim()))
+          .filter((n) => !isNaN(n));
+
+        if (array.length === 0) {
+          vscode.window.showErrorMessage("Invalid array input");
+          return;
+        }
+
+        // Prompt for code
+        const code = await vscode.window.showInputBox({
+          prompt: "Enter your sorting code (use 'arr' as array name)",
+          placeHolder: "e.g., for(let i=0; i<arr.length; i++) { ... }",
+          value: "",
+        });
+
+        if (!code) return;
+
+        try {
+          // Replace placeholder with actual array
+          const fullCode = `let arr = [${array.join(", ")}];\n${code}`;
+          const operations = parser.parse(fullCode);
+
+          sendOperationsToVisualization(operations);
+          vscode.window.showInformationMessage(
+            `Visualizing custom code with ${operations.length} operations`
+          );
+        } catch (error) {
+          vscode.window.showErrorMessage(
+            `Failed to parse code: ${error.message}`
+          );
+        }
+      } else {
+        // Generate operations for selected algorithm
+        const arrayInput = await vscode.window.showInputBox({
+          prompt: "Enter array values (comma-separated numbers)",
+          placeHolder: "e.g., 64, 34, 25, 12, 22, 11, 90",
+          value: "64, 34, 25, 12, 22, 11, 90",
+        });
+
+        if (!arrayInput) return;
+
+        const array = arrayInput
+          .split(",")
+          .map((n) => parseInt(n.trim()))
+          .filter((n) => !isNaN(n));
+
+        if (array.length === 0) {
+          vscode.window.showErrorMessage("Invalid array input");
+          return;
+        }
+
+        let operations = [];
+        switch (algorithmChoice.value) {
+          case "bubbleSort":
+            operations = parser.generateBubbleSort(array);
+            break;
+          case "selectionSort":
+            operations = parser.generateSelectionSort(array);
+            break;
+          case "insertionSort":
+            operations = parser.generateInsertionSort(array);
+            break;
+        }
+
+        sendOperationsToVisualization(operations);
+        vscode.window.showInformationMessage(
+          `Visualizing ${algorithmChoice.label} with ${operations.length} operations`
+        );
+      }
+    }
+  );
+
+  function sendOperationsToVisualization(operations) {
+    // Create webview if it doesn't exist
+    if (!visualDebugPanel) {
+      createWebviewPanel(context);
+    }
+
+    // Send to webview
+    if (visualDebugPanel) {
+      visualDebugPanel.webview.postMessage({
+        type: "operations",
+        operations: operations,
+      });
+    }
+
+    // Send to browser
+    server.sendOperations(operations);
+  }
+
   context.subscriptions.push(
     startCommand,
     openInBrowserCommand,
-    debugFileCommand
+    debugFileCommand,
+    visualizeAlgorithmCommand
   );
 
   // Clean up when extension is deactivated
@@ -147,12 +282,11 @@ function createWebviewPanel(context) {
         case "ready":
           console.log("Webview is ready");
           // Send initial test data
+          const testArray = [64, 34, 25, 12, 22, 11, 90];
+          const operations = parser.generateBubbleSort(testArray);
           visualDebugPanel.webview.postMessage({
-            type: "initialize",
-            data: {
-              array: [64, 34, 25, 12, 22, 11, 90],
-              algorithm: "bubbleSort",
-            },
+            type: "operations",
+            operations: operations,
           });
           break;
         case "openInBrowser":
@@ -163,6 +297,22 @@ function createWebviewPanel(context) {
           break;
         case "error":
           vscode.window.showErrorMessage(`Visual Debug Error: ${message.data}`);
+          break;
+        case "visualizeCode":
+          // User entered code in webview
+          try {
+            const operations = parser.parse(message.code);
+            visualDebugPanel.webview.postMessage({
+              type: "operations",
+              operations: operations,
+            });
+            server.sendOperations(operations);
+          } catch (error) {
+            visualDebugPanel.webview.postMessage({
+              type: "error",
+              message: error.message,
+            });
+          }
           break;
       }
     },
@@ -220,6 +370,53 @@ function getWebviewContent() {
             
             #open-browser-btn:hover {
                 transform: translateY(-2px);
+            }
+
+            #code-input-section {
+                margin-bottom: 20px;
+                padding: 15px;
+                background: #2d2d30;
+                border-radius: 8px;
+            }
+
+            #code-input-section h3 {
+                margin: 0 0 10px 0;
+                color: #9999ff;
+            }
+
+            #code-textarea {
+                width: 100%;
+                min-height: 120px;
+                padding: 10px;
+                background: #1e1e1e;
+                color: #cccccc;
+                border: 1px solid #3e3e42;
+                border-radius: 4px;
+                font-family: 'Consolas', 'Courier New', monospace;
+                font-size: 13px;
+                resize: vertical;
+            }
+
+            #visualize-btn {
+                margin-top: 10px;
+                padding: 8px 16px;
+                background: #4ec9b0;
+                color: #1e1e1e;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 14px;
+                font-weight: 600;
+            }
+
+            #visualize-btn:hover {
+                background: #5ed9c0;
+            }
+
+            .code-example {
+                font-size: 12px;
+                color: #888;
+                margin-top: 5px;
             }
             
             #canvas-container {
@@ -292,6 +489,15 @@ function getWebviewContent() {
                 border-radius: 6px;
                 margin-bottom: 10px;
             }
+
+            .error-message {
+                background: #ff646422;
+                border: 1px solid #ff646444;
+                padding: 12px;
+                border-radius: 6px;
+                margin-top: 10px;
+                color: #ff9999;
+            }
         </style>
     </head>
     <body>
@@ -305,6 +511,25 @@ function getWebviewContent() {
         
         <div class="notice">
             💡 For the best experience with smooth 3D animations, click "Open Full 3D View in Browser" above!
+        </div>
+
+        <div id="code-input-section">
+            <h3>📝 Enter Your Code</h3>
+            <textarea id="code-textarea" placeholder="let arr = [64, 34, 25, 12, 22, 11, 90];
+
+// Bubble Sort
+for (let i = 0; i < arr.length; i++) {
+    for (let j = 0; j < arr.length - i - 1; j++) {
+        if (arr[j] > arr[j + 1]) {
+            [arr[j], arr[j + 1]] = [arr[j + 1], arr[j]];
+        }
+    }
+}"></textarea>
+            <div class="code-example">
+                Example: Initialize an array and write sorting logic. Use array operations like comparisons and swaps.
+            </div>
+            <button id="visualize-btn">🚀 Visualize Code</button>
+            <div id="error-display"></div>
         </div>
         
         <div id="canvas-container">
@@ -344,6 +569,20 @@ function getWebviewContent() {
             // Open in browser button
             document.getElementById('open-browser-btn').addEventListener('click', () => {
                 vscode.postMessage({ type: 'openInBrowser' });
+            });
+
+            // Visualize button
+            document.getElementById('visualize-btn').addEventListener('click', () => {
+                const code = document.getElementById('code-textarea').value;
+                const errorDisplay = document.getElementById('error-display');
+                errorDisplay.innerHTML = '';
+
+                if (!code.trim()) {
+                    errorDisplay.innerHTML = '<div class="error-message">Please enter some code to visualize</div>';
+                    return;
+                }
+
+                vscode.postMessage({ type: 'visualizeCode', code: code });
             });
             
             // Set canvas size
@@ -393,26 +632,29 @@ function getWebviewContent() {
                 const maxValue = Math.max(...array);
                 
                 indices.forEach(index => {
-                    const value = array[index];
-                    const barHeight = (value / maxValue) * (canvas.height - 40);
-                    const x = 10 + index * (barWidth + 2);
-                    const y = canvas.height - barHeight - 20;
-                    
-                    ctx.fillStyle = color;
-                    ctx.fillRect(x, y, barWidth, barHeight);
+                    if (index >= 0 && index < array.length) {
+                        const value = array[index];
+                        const barHeight = (value / maxValue) * (canvas.height - 40);
+                        const x = 10 + index * (barWidth + 2);
+                        const y = canvas.height - barHeight - 20;
+                        
+                        ctx.fillStyle = color;
+                        ctx.fillRect(x, y, barWidth, barHeight);
+                    }
                 });
             }
             
             function animateSwap(i, j) {
-                // Simple swap for now - we'll add smooth animation later
-                [array[i], array[j]] = [array[j], array[i]];
-                draw();
-                highlightBars([i, j], '#f48771'); // Highlight swapped elements
+                if (i >= 0 && i < array.length && j >= 0 && j < array.length) {
+                    [array[i], array[j]] = [array[j], array[i]];
+                    draw();
+                    highlightBars([i, j], '#f48771');
+                }
             }
             
             function animateCompare(i, j) {
                 draw();
-                highlightBars([i, j], '#ffcc00'); // Yellow for comparison
+                highlightBars([i, j], '#ffcc00');
             }
             
             // Control handlers
@@ -450,8 +692,6 @@ function getWebviewContent() {
             }
             
             function stepBackward() {
-                // For now, just reset and replay to previous step
-                // We'll implement proper backward stepping later
                 if (currentStep > 0) {
                     const targetStep = currentStep - 1;
                     reset();
@@ -467,8 +707,8 @@ function getWebviewContent() {
                 currentStep = 0;
                 isPlaying = false;
                 document.getElementById('play-pause').textContent = 'Play';
-                if (operations.length > 0 && operations[0].initialArray) {
-                    array = [...operations[0].initialArray];
+                if (operations.length > 0 && operations[0].array) {
+                    array = [...operations[0].array];
                     draw();
                 }
                 updateInfo();
@@ -497,6 +737,17 @@ function getWebviewContent() {
                         draw();
                         highlightBars(op.indices, op.color || '#4ec9b0');
                         break;
+                    case 'sorted':
+                        draw();
+                        highlightBars(op.indices, '#40ff40');
+                        break;
+                    case 'init':
+                        array = [...op.array];
+                        draw();
+                        break;
+                    case 'complete':
+                        array.forEach((_, i) => highlightBars([i], '#40ff40'));
+                        break;
                 }
             }
             
@@ -512,12 +763,18 @@ function getWebviewContent() {
                         case 'swap':
                             message = \`Swapping elements at positions \${op.indices[0]} and \${op.indices[1]}\`;
                             break;
+                        case 'sorted':
+                            message = \`Element at position \${op.indices[0]} is sorted\`;
+                            break;
+                        case 'complete':
+                            message = 'Sorting complete! ✨';
+                            break;
                         default:
                             message = \`Operation: \${op.type}\`;
                     }
                     infoDiv.textContent = \`Step \${currentStep + 1}/\${operations.length}: \${message}\`;
                 } else if (operations.length > 0) {
-                    infoDiv.textContent = 'Sorting complete!';
+                    infoDiv.textContent = 'Visualization complete!';
                 } else {
                     infoDiv.textContent = 'Ready to visualize...';
                 }
@@ -528,37 +785,25 @@ function getWebviewContent() {
             // Message handling
             window.addEventListener('message', event => {
                 const message = event.data;
+                const errorDisplay = document.getElementById('error-display');
+                
                 switch (message.type) {
-                    case 'initialize':
-                        array = [...message.data.array];
-                        draw();
-                        generateBubbleSortOperations(message.data.array);
+                    case 'operations':
+                        operations = message.operations;
+                        currentStep = 0;
+                        if (operations.length > 0 && operations[0].array) {
+                            array = [...operations[0].array];
+                        }
+                        reset();
                         updateInfo();
+                        errorDisplay.innerHTML = '';
+                        vscode.postMessage({ type: 'log', data: 'Operations loaded: ' + operations.length });
                         break;
-                    case 'loadCode':
-                        vscode.postMessage({ type: 'log', data: 'Code loaded: ' + message.fileName });
-                        // We'll parse the code later
+                    case 'error':
+                        errorDisplay.innerHTML = '<div class="error-message">' + message.message + '</div>';
                         break;
                 }
             });
-            
-            // Generate bubble sort operations for testing
-            function generateBubbleSortOperations(arr) {
-                operations = [];
-                const testArray = [...arr];
-                operations.push({ type: 'init', initialArray: [...arr] });
-                
-                for (let i = 0; i < testArray.length; i++) {
-                    for (let j = 0; j < testArray.length - i - 1; j++) {
-                        operations.push({ type: 'compare', indices: [j, j + 1] });
-                        
-                        if (testArray[j] > testArray[j + 1]) {
-                            operations.push({ type: 'swap', indices: [j, j + 1] });
-                            [testArray[j], testArray[j + 1]] = [testArray[j + 1], testArray[j]];
-                        }
-                    }
-                }
-            }
             
             // Tell the extension we're ready
             vscode.postMessage({ type: 'ready' });
