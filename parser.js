@@ -1,3 +1,4 @@
+// @ts-nocheck
 const parser = require("@babel/parser");
 const traverse = require("@babel/traverse").default;
 
@@ -19,6 +20,8 @@ class CodeParser {
     this.arrayName = null;
 
     try {
+      console.log("Parsing code:", code);
+
       // Parse the code into an AST
       const ast = parser.parse(code, {
         sourceType: "module",
@@ -34,15 +37,18 @@ class CodeParser {
         );
       }
 
+      console.log("Found array:", this.arrayName, "=", this.currentArray);
+
       // Add initial state
       this.operations.push({
         type: "init",
         array: [...this.currentArray],
       });
 
-      // Second pass: Extract operations
-      this.extractOperations(ast);
+      // Second pass: Execute the code logic
+      this.executeCode(ast);
 
+      console.log(`Generated ${this.operations.length} operations`);
       return this.operations;
     } catch (error) {
       console.error("Parse error:", error);
@@ -63,7 +69,7 @@ class CodeParser {
         ) {
           this.arrayName = id.name;
           this.currentArray = init.elements.map((el) => {
-            if (el.type === "NumericLiteral") {
+            if (el && el.type === "NumericLiteral") {
               return el.value;
             }
             return 0;
@@ -73,32 +79,287 @@ class CodeParser {
     });
   }
 
-  extractOperations(ast) {
-    traverse(ast, {
-      // Detect for loops (common in sorting algorithms)
-      ForStatement: (path) => {
-        this.handleForLoop(path);
-      },
+  executeCode(ast) {
+    // Extract the function/loop structure
+    const forLoops = this.extractForLoops(ast);
 
-      // Detect array element access for comparison
-      BinaryExpression: (path) => {
-        if (this.isArrayComparison(path.node)) {
-          const indices = this.getComparisonIndices(path.node);
-          if (indices.length === 2) {
-            this.operations.push({
-              type: "compare",
-              indices: indices,
-              values: indices.map((i) => this.currentArray[i]),
-            });
-          }
+    console.log("=== EXECUTE CODE DEBUG ===");
+    console.log(`Found ${forLoops.length} top-level for loops`);
+
+    if (forLoops.length === 0) {
+      // No loops - just direct operations
+      console.log("No loops found, extracting direct operations");
+      this.extractDirectSwaps(ast);
+    } else if (forLoops.length === 1) {
+      // Single loop
+      console.log("Single loop found");
+      this.executeSingleLoop(forLoops[0]);
+    } else if (forLoops.length >= 2) {
+      // Nested loops
+      console.log("Nested loops found");
+      this.executeNestedLoops(forLoops);
+    }
+
+    console.log(`Total operations before complete: ${this.operations.length}`);
+
+    // Add completion marker
+    this.operations.push({ type: "complete" });
+
+    console.log(`Final operation count: ${this.operations.length}`);
+  }
+
+  extractForLoops(ast) {
+    const loops = [];
+
+    traverse(ast, {
+      ForStatement: (path) => {
+        // Get all for loops at the top level (not inside functions)
+        const functionParent = path.getFunctionParent();
+        if (!functionParent) {
+          loops.push({
+            node: path.node,
+            path: path,
+            depth: 0,
+          });
         }
       },
+    });
 
-      // Detect swap operations
+    return loops;
+  }
+
+  executeSingleLoop(loopInfo) {
+    const loop = loopInfo.node;
+
+    // Get loop bounds
+    let start = 0;
+    let end = this.currentArray.length;
+
+    // Check loop.init
+    if (
+      loop.init &&
+      loop.init.type === "VariableDeclaration" &&
+      loop.init.declarations &&
+      loop.init.declarations.length > 0
+    ) {
+      const initValue = loop.init.declarations[0].init;
+      if (initValue && initValue.type === "NumericLiteral") {
+        start = initValue.value;
+      }
+    }
+
+    // Check loop.test
+    if (loop.test && loop.test.type === "BinaryExpression") {
+      const testRight = loop.test.right;
+      if (testRight) {
+        if (testRight.type === "NumericLiteral") {
+          end = testRight.value;
+        } else if (testRight.type === "MemberExpression") {
+          end = this.currentArray.length;
+        } else if (testRight.type === "BinaryExpression") {
+          end = this.currentArray.length - 1;
+        }
+      }
+    }
+
+    console.log(`Single loop: ${start} to ${end}`);
+
+    // Execute loop
+    for (let i = start; i < end; i++) {
+      this.executeLoopBody(loop.body, { i: i });
+    }
+  }
+
+  executeNestedLoops(loops) {
+    // Assume first loop is outer, detect inner from body
+    const outerLoop = loops[0].node;
+    let innerLoopNode = null;
+
+    // Find inner loop
+    traverse(outerLoop.body, {
+      ForStatement: (path) => {
+        if (!innerLoopNode) {
+          innerLoopNode = path.node;
+        }
+      },
+    });
+
+    if (!innerLoopNode) {
+      console.log("No inner loop found, treating as single loop");
+      this.executeSingleLoop(loops[0]);
+      return;
+    }
+
+    // Get outer loop bounds
+    let outerStart = 0;
+    let outerEnd = this.currentArray.length;
+    let outerVar = "i";
+
+    if (
+      outerLoop.init &&
+      outerLoop.init.type === "VariableDeclaration" &&
+      outerLoop.init.declarations &&
+      outerLoop.init.declarations.length > 0
+    ) {
+      outerVar = outerLoop.init.declarations[0].id.name;
+      const initValue = outerLoop.init.declarations[0].init;
+      if (initValue && initValue.type === "NumericLiteral") {
+        outerStart = initValue.value;
+      }
+    }
+
+    if (outerLoop.test && outerLoop.test.type === "BinaryExpression") {
+      const testRight = outerLoop.test.right;
+      if (testRight) {
+        if (testRight.type === "MemberExpression") {
+          outerEnd = this.currentArray.length;
+        } else if (testRight.type === "BinaryExpression") {
+          outerEnd = this.currentArray.length - 1;
+        }
+      }
+    }
+
+    // Get inner loop bounds
+    let innerStart = 0;
+    let innerEndExpr = null;
+    let innerVar = "j";
+    let innerBoundUsesOuter = false;
+
+    if (
+      innerLoopNode.init &&
+      innerLoopNode.init.type === "VariableDeclaration" &&
+      innerLoopNode.init.declarations &&
+      innerLoopNode.init.declarations.length > 0
+    ) {
+      innerVar = innerLoopNode.init.declarations[0].id.name;
+      const initValue = innerLoopNode.init.declarations[0].init;
+      if (initValue && initValue.type === "NumericLiteral") {
+        innerStart = initValue.value;
+      }
+    }
+
+    if (innerLoopNode.test && innerLoopNode.test.type === "BinaryExpression") {
+      const testRight = innerLoopNode.test.right;
+      if (testRight) {
+        innerEndExpr = testRight;
+
+        // Check if inner bound depends on outer variable
+        if (testRight.type === "BinaryExpression") {
+          // Check if it references outer variable
+          if (this.expressionContainsVariable(testRight, outerVar)) {
+            innerBoundUsesOuter = true;
+          }
+        }
+      }
+    }
+
+    console.log(
+      `Nested loops: outer(${outerStart}-${outerEnd}), inner depends on outer: ${innerBoundUsesOuter}`
+    );
+
+    // Check for swap operation in inner loop
+    let hasSwap = false;
+    let swapConditionNode = null;
+    let alwaysSwap = false;
+
+    traverse(innerLoopNode.body, {
+      IfStatement: (path) => {
+        swapConditionNode = path.node.test;
+
+        // Check for swap inside if
+        traverse(path.node.consequent, {
+          ExpressionStatement: (exprPath) => {
+            if (this.isSwapOperation(exprPath.node)) {
+              hasSwap = true;
+            }
+          },
+        });
+      },
       ExpressionStatement: (path) => {
-        if (this.isSwapOperation(path.node)) {
-          const indices = this.getSwapIndices(path.node);
-          if (indices && indices.length === 2) {
+        // Check for swap outside if (always swap)
+        if (!hasSwap && this.isSwapOperation(path.node)) {
+          hasSwap = true;
+          alwaysSwap = true;
+        }
+      },
+    });
+
+    console.log(`Has swap: ${hasSwap}, Always swap: ${alwaysSwap}`);
+
+    // Execute nested loops
+    for (let i = outerStart; i < outerEnd; i++) {
+      let innerEnd;
+
+      if (innerBoundUsesOuter) {
+        innerEnd = this.currentArray.length - i - 1;
+      } else {
+        innerEnd = this.currentArray.length - 1;
+      }
+
+      for (let j = innerStart; j < innerEnd; j++) {
+        // Add compare operation
+        this.operations.push({
+          type: "compare",
+          indices: [j, j + 1],
+          values: [this.currentArray[j], this.currentArray[j + 1]],
+        });
+
+        // Determine if should swap
+        let shouldSwap = false;
+
+        if (alwaysSwap) {
+          shouldSwap = true;
+        } else if (
+          swapConditionNode &&
+          swapConditionNode.type === "BinaryExpression"
+        ) {
+          const op = swapConditionNode.operator;
+
+          if (op === ">") {
+            shouldSwap = this.currentArray[j] > this.currentArray[j + 1];
+          } else if (op === "<") {
+            shouldSwap = this.currentArray[j] < this.currentArray[j + 1];
+          } else if (op === ">=") {
+            shouldSwap = this.currentArray[j] >= this.currentArray[j + 1];
+          } else if (op === "<=") {
+            shouldSwap = this.currentArray[j] <= this.currentArray[j + 1];
+          }
+        }
+
+        if (shouldSwap) {
+          this.operations.push({
+            type: "swap",
+            indices: [j, j + 1],
+            values: [this.currentArray[j], this.currentArray[j + 1]],
+          });
+
+          [this.currentArray[j], this.currentArray[j + 1]] = [
+            this.currentArray[j + 1],
+            this.currentArray[j],
+          ];
+        }
+      }
+
+      // Mark as sorted if inner bound reduces
+      if (innerBoundUsesOuter && !alwaysSwap) {
+        this.operations.push({
+          type: "sorted",
+          indices: [this.currentArray.length - i - 1],
+        });
+      }
+    }
+  }
+
+  executeLoopBody(body, vars) {
+    // Execute operations inside loop body
+    if (body && body.type === "BlockStatement" && body.body) {
+      body.body.forEach((statement) => {
+        if (
+          statement.type === "ExpressionStatement" &&
+          this.isSwapOperation(statement)
+        ) {
+          const indices = this.getSwapIndices(statement);
+          if (indices) {
             this.operations.push({
               type: "swap",
               indices: indices,
@@ -107,7 +368,36 @@ class CodeParser {
                 this.currentArray[indices[1]],
               ],
             });
-            // Update the simulated array
+
+            [this.currentArray[indices[0]], this.currentArray[indices[1]]] = [
+              this.currentArray[indices[1]],
+              this.currentArray[indices[0]],
+            ];
+          }
+        }
+      });
+    }
+  }
+
+  extractDirectSwaps(ast) {
+    console.log("Extracting direct swaps");
+
+    traverse(ast, {
+      ExpressionStatement: (path) => {
+        if (this.isSwapOperation(path.node)) {
+          const indices = this.getSwapIndices(path.node);
+          if (indices && indices.length === 2) {
+            console.log(`Found swap: [${indices[0]}, ${indices[1]}]`);
+
+            this.operations.push({
+              type: "swap",
+              indices: indices,
+              values: [
+                this.currentArray[indices[0]],
+                this.currentArray[indices[1]],
+              ],
+            });
+
             [this.currentArray[indices[0]], this.currentArray[indices[1]]] = [
               this.currentArray[indices[1]],
               this.currentArray[indices[0]],
@@ -115,82 +405,25 @@ class CodeParser {
           }
         }
       },
-
-      // Detect array assignment
-      AssignmentExpression: (path) => {
-        if (this.isArrayAssignment(path.node)) {
-          const { index, value } = this.getAssignmentDetails(path.node);
-          if (index !== null && value !== null) {
-            this.operations.push({
-              type: "set",
-              indices: [index],
-              value: value,
-            });
-            this.currentArray[index] = value;
-          }
-        }
-      },
-    });
-
-    // Add completion marker
-    this.operations.push({ type: "complete" });
-  }
-
-  handleForLoop(path) {
-    // This is a simplified handler - in a full implementation,
-    // we would need to actually execute the loop logic
-    // For now, we'll just note that we're entering a loop
-    this.operations.push({
-      type: "comment",
-      message: "Entering loop",
     });
   }
 
-  isArrayComparison(node) {
-    if (node.type !== "BinaryExpression") return false;
+  expressionContainsVariable(expr, varName) {
+    if (!expr) return false;
 
-    const { left, right, operator } = node;
-    const comparisonOps = [">", "<", ">=", "<=", "==", "===", "!=", "!=="];
+    let found = false;
 
-    return (
-      comparisonOps.includes(operator) &&
-      (this.isArrayAccess(left) || this.isArrayAccess(right))
-    );
-  }
-
-  isArrayAccess(node) {
-    return (
-      node &&
-      node.type === "MemberExpression" &&
-      node.object.type === "Identifier" &&
-      node.object.name === this.arrayName
-    );
-  }
-
-  getComparisonIndices(node) {
-    const indices = [];
-    const { left, right } = node;
-
-    if (this.isArrayAccess(left) && left.property.type === "NumericLiteral") {
-      indices.push(left.property.value);
-    } else if (
-      this.isArrayAccess(left) &&
-      left.property.type === "Identifier"
-    ) {
-      // Handle variable indices - for now, we'll use 0 as placeholder
-      indices.push(0);
+    if (expr.type === "Identifier" && expr.name === varName) {
+      return true;
     }
 
-    if (this.isArrayAccess(right) && right.property.type === "NumericLiteral") {
-      indices.push(right.property.value);
-    } else if (
-      this.isArrayAccess(right) &&
-      right.property.type === "Identifier"
-    ) {
-      indices.push(1);
+    if (expr.type === "BinaryExpression") {
+      found =
+        this.expressionContainsVariable(expr.left, varName) ||
+        this.expressionContainsVariable(expr.right, varName);
     }
 
-    return indices;
+    return found;
   }
 
   isSwapOperation(node) {
@@ -198,7 +431,9 @@ class CodeParser {
     if (
       node.expression &&
       node.expression.type === "AssignmentExpression" &&
+      node.expression.left &&
       node.expression.left.type === "ArrayPattern" &&
+      node.expression.right &&
       node.expression.right.type === "ArrayExpression"
     ) {
       return true;
@@ -208,10 +443,14 @@ class CodeParser {
 
   getSwapIndices(node) {
     try {
+      if (!node.expression || !node.expression.left || !node.expression.right) {
+        return null;
+      }
+
       const left = node.expression.left.elements;
       const right = node.expression.right.elements;
 
-      if (left.length === 2 && right.length === 2) {
+      if (left && right && left.length === 2 && right.length === 2) {
         const i1 = this.getIndexFromArrayAccess(left[0]);
         const i2 = this.getIndexFromArrayAccess(left[1]);
 
@@ -225,35 +464,13 @@ class CodeParser {
     return null;
   }
 
-  isArrayAssignment(node) {
-    return (
-      node.type === "AssignmentExpression" &&
-      node.left.type === "MemberExpression" &&
-      node.left.object.name === this.arrayName
-    );
-  }
-
-  getAssignmentDetails(node) {
-    const index = this.getIndexFromArrayAccess(node.left);
-    let value = null;
-
-    if (node.right.type === "NumericLiteral") {
-      value = node.right.value;
-    }
-
-    return { index, value };
-  }
-
   getIndexFromArrayAccess(node) {
     if (!node || !node.property) return null;
 
     if (node.property.type === "NumericLiteral") {
       return node.property.value;
-    } else if (node.property.type === "Identifier") {
-      // For variable indices, we'll need more context
-      // For now, return null
-      return null;
     }
+
     return null;
   }
 

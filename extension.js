@@ -228,12 +228,14 @@ function activate(context) {
       createWebviewPanel(context);
     }
 
-    // Send to webview
+    // Send to webview with a slight delay to ensure it's ready
     if (visualDebugPanel) {
-      visualDebugPanel.webview.postMessage({
-        type: "operations",
-        operations: operations,
-      });
+      setTimeout(() => {
+        visualDebugPanel.webview.postMessage({
+          type: "operations",
+          operations: operations,
+        });
+      }, 100);
     }
 
     // Send to browser
@@ -281,13 +283,8 @@ function createWebviewPanel(context) {
       switch (message.type) {
         case "ready":
           console.log("Webview is ready");
-          // Send initial test data
-          const testArray = [64, 34, 25, 12, 22, 11, 90];
-          const operations = parser.generateBubbleSort(testArray);
-          visualDebugPanel.webview.postMessage({
-            type: "operations",
-            operations: operations,
-          });
+          // Don't send test data automatically anymore
+          // Wait for user to trigger visualization
           break;
         case "openInBrowser":
           vscode.commands.executeCommand("visual-debug.openInBrowser");
